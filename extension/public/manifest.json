@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "SpoilerScroll",
+  "version": "0.1.0",
+  "description": "Recognize repeated information and choose whether to keep reading.",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "storage",
+    "scripting",
+    "alarms",
+    "activeTab"
+  ],
+  "optional_host_permissions": [
+    "https://www.reddit.com/*",
+    "https://old.reddit.com/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SpoilerScroll"
+  },
+  "incognito": "not_allowed",
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsR8kuVSAZOzEWqgtiYchLVMPn1hVeZOsrJ+aZ7qPOghdaaX3LPp86sMseVte3+vp/DhDkEiVB7hlNgsfY+7JXgcNvagZp01JVOls07jFM6qn5lKT9SCf+On1w21P9HsKRsfWvml5D0QXuhavFmNn9V17cpiuq+EHQ+fn4BeZZdyeQBxLtZA6RxKyFuVDL8OXZFujKNB6lRXYAuMGaPx5tZppkbaSsl8+VLa0PLsbO2++s2oDYMioz+Rbg6xQvD1dmQijTuBGDHO7IMmyluyvH6ej4+Lr5Myvlnh594ygwNfjIyVfiVfOmaNCHVICrzlL5mwo+QB7ci3+9ePx7UnR/wIDAQAB"
+}

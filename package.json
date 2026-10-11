@@ -1,0 +1,28 @@
+{
+  "dependencies": {
+    "@keewano/node-sdk": "^1.3.0-207",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@keewano/codegen": "^1.1.0-111",
+    "@types/node": "^26.6.5",
+    "@types/pg": "^8.23.1",
+    "typescript": "^7.0.2"
+  },
+  "name": "spoilerscroll",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "node --env-file=.env dist/index.js",
+    "events:generate": "keewano-codegen --target node --code server/analytics",
+    "test": "npm run build && node --test dist/analytics/keewano.test.js dist/decisions/pipeline.test.js dist/integrations/integrations.test.js dist/integrations/behavior.test.js",
+    "keewano:smoke": "npm run build && node --env-file=.env dist/smoke.js",
+    "test:all": "node scripts/test-all.mjs",
+    "verify:wiring": "npm run build && node scripts/verify-wiring.mjs"
+  }
+}

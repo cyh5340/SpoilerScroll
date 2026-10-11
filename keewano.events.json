@@ -1,0 +1,40 @@
+{
+  "events": [
+    {
+      "eventName": "ContentContext",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "SiteContext",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "SummaryContext",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "AgentContext",
+      "eventValueType": "string"
+    },
+    {
+      "eventName": "ContentViewed",
+      "eventValueType": "none"
+    },
+    {
+      "eventName": "SpoilerShown",
+      "eventValueType": "none"
+    },
+    {
+      "eventName": "SpoilerSkipped",
+      "eventValueType": "none"
+    },
+    {
+      "eventName": "ReadAnyway",
+      "eventValueType": "none"
+    },
+    {
+      "eventName": "FalsePositiveReported",
+      "eventValueType": "none"
+    }
+  ]
+}

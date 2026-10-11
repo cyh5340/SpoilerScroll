@@ -1,0 +1,13 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SpoilerScroll</title><link rel="stylesheet" href="popup.css"></head><body>
+<header><span class="mark" aria-hidden="true">↘</span><span>SpoilerScroll</span><span id="mode" class="pill">Paused</span></header>
+<main><p class="eyebrow">MAKE THE NEXT CLICK A CHOICE</p><h1>A familiar story?<br>You can skip ahead.</h1><p class="intro">Spot repeated information before you spend more time reading.</p>
+<section class="stats" aria-label="Session activity"><div><strong id="views">0</strong><span>previews viewed</span></div><div><strong id="repeats">0</strong><span>spoilers shown</span></div><div><strong id="skips">0</strong><span>explicit skips</span></div></section>
+<button id="demo" class="primary">Try the local demo <span aria-hidden="true">↗</span></button><p class="hint">Scripted previews. No data leaves this browser.</p>
+<details id="setup"><summary>Set up Reddit monitoring</summary><p>On public Reddit feeds, previews visible for 3 seconds are sent to your paired backend. It may use external models or extractors. Summaries are stored there; behavior and content IDs go to Keewano.</p><p>Private messages, profiles and settings are excluded. Pausing stops new capture and queued delivery.</p>
+<label class="consent"><input type="checkbox" id="consent"> I agree to send public previews and interaction events to my configured backend.</label>
+<button id="enable" class="secondary">Allow Reddit and connect</button><p class="hint">Keep the local backend running. This button pairs it automatically.</p></details>
+<button id="pause" class="secondary" disabled>Pause spoilers</button>
+<p id="status" role="status" aria-live="polite">Loading extension state…</p>
+<p id="tab-status" role="status">Checking this tab…</p>
+<details class="manage"><summary>Pending data</summary><p id="queue">No pending events.</p><button id="clear" class="text-button">Discard local pending data</button><p class="hint">This does not delete history already sent to your backend or Keewano.</p></details>
+</main><footer>Less repetition. More intention.</footer><script src="popup.js"></script></body></html>
