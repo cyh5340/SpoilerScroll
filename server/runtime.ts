@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import pg from 'pg';
 import { ContentStore, HttpModelProvider } from './content/index.js';
 import { LocalExtractiveProvider } from './content/local.js';
-import { DecisionPipeline } from './decisions/index.js';
+import { DecisionPipeline, type HistoryLookup } from './decisions/index.js';
 import { DarwinSearch, ExtractionIntegration, KeewanoHistoryReader, keewanoSqlConfig, type HistoryReader } from './integrations/index.js';
 import { keewanoBehaviorHistory } from './integrations/behavior.js';
 import { trackContentEvent } from './analytics/keewano.js';
@@ -27,16 +27,21 @@ export async function createRuntime(dataDir=resolve('.data/app'), dependencies: 
   }
   function authorized(installId:string,token:string){return !!token && pairs[installId]===token;}
   const store=new ContentStore(resolve(dataDir,'content.json'));
-  const sqlConfig=keewanoSqlConfig();
+  const requireKeewano=process.env.SPOILERSCROLL_HISTORY_SOURCE==='keewano';
+  const sqlConfig=requireKeewano?keewanoSqlConfig():undefined;
   const pool=sqlConfig?new pg.Pool(sqlConfig):undefined;
   const historyReader=dependencies.historyReader ?? new KeewanoHistoryReader(pool);
-  let historyStatus=pool || dependencies.historyReader?'Keewano history configured, unverified':'Detection unavailable: Keewano read credentials not configured';
-  const history=keewanoBehaviorHistory(store,historyReader,status=>{historyStatus=status;});
-  // Old decisions may have been based entirely on local or merged pending views.
+  let historyStatus=requireKeewano?'Keewano history configured, unverified':'Local captured-view history; Keewano records analytics asynchronously';
+  const history:HistoryLookup=requireKeewano?keewanoBehaviorHistory(store,historyReader,status=>{historyStatus=status;}):{lookup:async({installId,before})=>{
+    const state=await store.read(),beforeMs=Date.parse(before);
+    const viewed=Object.values(state.records).filter(r=>r.observation.installId===installId && r.observation.dwellSeconds>=3 && Date.parse(r.receivedAt)<beforeMs && Date.parse(r.receivedAt)>=beforeMs-86400000).map(r=>({observationId:r.observation.observationId,contentId:r.observation.contentId,scope:r.observation.scope}));
+    return {status:'ready',source:'cache',fetchedAt:new Date().toISOString(),queryId:'local-confirmed:v1',viewed};
+  }};
+  // Recompute decisions from the selected source instead of retaining unavailable reads.
   await store.update(state=>{
     for(const cached of Object.values(state.decisions)) {
       const previous=cached.history as {queryId?: unknown} | undefined;
-      if(typeof previous?.queryId!=='string' || !previous.queryId.startsWith('keewano-confirmed:')) {
+      if(typeof previous?.queryId!=='string' || !previous.queryId.startsWith(requireKeewano?'keewano-confirmed:':'local-confirmed:')) {
         cached.decision={status:'pending',intervene:false,matchedContentIds:[]};
         cached.expiresAt=0;
       }

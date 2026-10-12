@@ -34,20 +34,29 @@ function time(value: unknown): string {
   return d.toISOString();
 }
 export class KeewanoHistoryReader implements HistoryReader {
+  private recentCache=new Map<string,{at:number;since:number;limit:number;result:Promise<ReadResult<ViewedContent[]>>}>();
   constructor(private readonly client?: SqlClient, private readonly performanceSchema?: PerformanceSchema) {
     if (performanceSchema) Object.values(performanceSchema).forEach(column);
   }
   async recentViewed(installId: string, since: Date, limit = 50): Promise<ReadResult<ViewedContent[]>> {
+    const cached=this.recentCache.get(installId);
+    if(cached && Date.now()-cached.at<5000 && cached.limit===limit && Math.abs(cached.since-since.getTime())<5000)return cached.result;
+    const result=this.queryRecentViewed(installId,since,limit);
+    this.recentCache.set(installId,{at:Date.now(),since:since.getTime(),limit,result});
+    if(this.recentCache.size>100)this.recentCache.delete(this.recentCache.keys().next().value!);
+    return result;
+  }
+  private async queryRecentViewed(installId:string,since:Date,limit:number):Promise<ReadResult<ViewedContent[]>> {
     if (!uuid.test(installId) || /^0{8}-0{4}-0{4}-0{4}-0{12}$/.test(installId)) throw new Error('Expected nonzero install UUID');
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error('Limit must be 1..200');
     // Aggregate the marker, rather than treating a held-forward marker as an event row.
-    // FILTER samples timestamps at ContentViewed occurrences; context is held-forward by Keewano.
+    // Group by event time and retain only groups containing actual marker occurrences.
+    // The live SQL engine does not support max(event_datetime) with FILTER.
     const sql = `SELECT user_id AS install_id, "ContentContext" AS content_id,
 "SiteContext" AS site, "SummaryContext" AS summary_id, "AgentContext" AS agent_id,
-count("ContentViewed") AS views,
-max(event_datetime) FILTER (WHERE "ContentViewed" IS NOT NULL) AS viewed_at
+count("ContentViewed") AS views, event_datetime AS viewed_at
 FROM events WHERE user_id = ${literal(installId)} AND event_datetime >= ${timestamp(since)}
-GROUP BY install_id, content_id, site, summary_id, agent_id
+GROUP BY install_id, content_id, site, summary_id, agent_id, viewed_at
 HAVING views > 0 ORDER BY viewed_at DESC, content_id ASC LIMIT ${limit}`;
     if (!this.client) return { status: 'unavailable', reason: 'credentials' };
     try {

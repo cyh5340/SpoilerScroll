@@ -29,9 +29,9 @@ export type Message =
  | {type: 'PAIR'}
  | {type: 'SETTINGS'; patch: Partial<Settings>}
  | {type: 'OBSERVE'; candidate: Candidate; dwellSeconds: number}
- | {type: 'DECISION'; candidate: Candidate}
+ | {type: 'DECISION'; candidate: Candidate; pageEnteredAt?:number}
  | {type: 'ACTION'; candidate: Candidate; action: Action}
- | {type: 'CLAIM'; candidate: Candidate}
+ | {type: 'CLAIM'; candidate: Candidate; explicit?:boolean}
  | {type: 'RESET_FIXTURE'}
  | {type: 'CLEAR_QUEUE'};
 export interface Reply { ok: boolean; error?: string; state?: Store; decision?: Decision; claimed?: boolean; }

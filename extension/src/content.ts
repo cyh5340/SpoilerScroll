@@ -5,7 +5,12 @@ import { send, type Decision, type Store, type Candidate } from './types';
 
 const marker='__spoilerScrollLoaded';
 const win=window as unknown as Record<string,unknown>;
-if(!win[marker]){win[marker]=true;start();}
+const previous=win[marker] as {alive?:()=>boolean;stop?:()=>void}|undefined;
+if(!previous || typeof previous.alive!=='function' || !previous.alive()) {
+  previous?.stop?.();
+  document.querySelectorAll('[data-spoilerscroll-ui="activity"]').forEach(el=>el.remove());
+  win[marker]={alive:()=>{try{return !!chrome.runtime.getManifest();}catch{return false;}},stop:start()};
+}
 function start() {
   const fixture=location.href.startsWith(chrome.runtime.getURL('fixture.html'));
   const tracker=new DwellTracker();
@@ -20,6 +25,8 @@ function start() {
   let decisionRequests=0;
   let epoch=0;
   let lastUrl=location.href;
+  let pageEnteredAt=Date.now();
+  let entrySeen:Set<string>|undefined;
   let activity:HTMLElement|undefined;
   let activityError='';
   function updateActivity() {
@@ -44,6 +51,7 @@ function start() {
       activityError='';
       const previous=state;
       state=reply.state;
+      entrySeen??=new Set(state.seen);
       if(previous && (previous.settings.paused!==state.settings.paused || previous.settings.mode!==state.settings.mode || previous.sessionId!==state.sessionId || previous.settings.redditEnabled!==state.settings.redditEnabled)) {epoch++;clearVisuals();}
       if(!active())clearVisuals();else scan();
       updateActivity();
@@ -73,15 +81,16 @@ function start() {
     if(pending.has(c.contentId) || decisionRequests>=2 || (decisions.get(c.contentId)?.key===key && Date.now()-(decisions.get(c.contentId)?.at??0)<(decisions.get(c.contentId)?.decision.status==='ready'?10_000:1500)))return;
     pending.add(c.contentId);decisionRequests++;
     try {
-      const reply=await send({type:'DECISION',candidate:c});
+      const reply=await send({type:'DECISION',candidate:c,pageEnteredAt});
       const latest=extractCard(card.element,fixture);
       if(version!==epoch || !active() || !card.element.isConnected || !latest || candidateKey(latest.candidate)!==key)return;
       if(reply.decision) {
+        if(reply.decision.reason==='keewano_history_unavailable')activityError='Detection unavailable: configure Keewano read credentials';
         decisions.set(c.contentId,{decision:reply.decision,key,at:Date.now()});
         badges.get(card.element)?.remove();badges.delete(card.element);
         if(reply.decision.status==='ready' && reply.decision.intervene) {
           const badge=createBadge(fixture,reply.decision.matchedContentIds.length);card.element.append(badge);badges.set(card.element,badge);
-          if(!fixture && !closeOverlay && !autoAttempted.has(c.contentId) && document.hasFocus() && document.visibilityState==='visible') {
+          if(!fixture && !closeOverlay && !autoAttempted.has(c.contentId) && (!reply.decision.reason?.startsWith('same_post_previously_viewed_') || entrySeen?.has(c.contentId)) && document.hasFocus() && document.visibilityState==='visible') {
             const rect=card.element.getBoundingClientRect();
             const visible=Math.max(0,Math.min(rect.bottom,innerHeight)-Math.max(rect.top,0));
             const opener=card.element.querySelector<HTMLAnchorElement>('a[href*="/comments/"]');
@@ -106,7 +115,7 @@ function start() {
     finally {pending.delete(c.contentId);decisionRequests--;}
   }
   async function tick() {
-    if(lastUrl!==location.href) {lastUrl=location.href;epoch++;clearVisuals();scan();}
+    if(lastUrl!==location.href) {lastUrl=location.href;pageEnteredAt=Date.now();entrySeen=new Set(state?.seen??[]);epoch++;clearVisuals();scan();}
     if(!active())return;
     const focused=document.visibilityState==='visible' && document.hasFocus();
     for(const card of cards.values()) {
@@ -127,12 +136,20 @@ function start() {
   }
   document.addEventListener('visibilitychange',()=>{tracker.resetAll();});
   window.addEventListener('blur',()=>tracker.resetAll());
-  chrome.runtime.onMessage.addListener(message=>{if(message.type==='CONFIG_CHANGED'){epoch++;clearVisuals();void refresh();}});
+  const onMessage=(message:{type:string},_sender:chrome.runtime.MessageSender,respond:(reply:unknown)=>void)=>{
+    if(message.type==='CONFIG_CHANGED'){epoch++;clearVisuals();void refresh();}
+    if(message.type==='PAGE_STATUS') {
+      void refresh().then(()=>respond({connected:true,build:'reconnect-2',supported:allowedRedditPage(location.href),active:active(),cards:cards.size,error:activityError}));
+      return true;
+    }
+  };
+  chrome.runtime.onMessage.addListener(onMessage);
   let scanScheduled=false;
-  new MutationObserver(()=>{
+  const mutations=new MutationObserver(()=>{
     if(scanScheduled)return;scanScheduled=true;
     window.setTimeout(()=>{scanScheduled=false;scan();},200);
-  }).observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['post-title','permalink','content-href','data-content-id']});
+  });
+  mutations.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['post-title','permalink','content-href','data-content-id']});
   let claiming=false;
   document.addEventListener('click',event=>{
     if(!active() || claiming)return;
@@ -152,7 +169,7 @@ function start() {
     if(!cached || cached.key!==candidateKey(card.candidate) || Date.now()-cached.at>30_000 || cached.decision.status!=='ready' || !cached.decision.intervene || !cached.decision.spoiler)return;
     event.preventDefault();event.stopImmediatePropagation();claiming=true;
     const destination=anchor.href,version=epoch;
-    void send({type:'CLAIM',candidate:card.candidate}).then(reply=>{
+    void send({type:'CLAIM',candidate:card.candidate,explicit:true}).then(reply=>{
       claiming=false;
       if(!reply.ok || !reply.claimed || !active() || version!==epoch){location.assign(destination);return;}
       void send({type:'ACTION',candidate:card.candidate,action:'SpoilerShown'});
@@ -169,5 +186,7 @@ function start() {
   if(fixture)document.querySelector('[data-reset]')?.addEventListener('click',()=>{
     void send({type:'RESET_FIXTURE'}).then(()=>location.assign(chrome.runtime.getURL('fixture.html')));
   });
-  updateActivity();scan();void refresh();window.setInterval(()=>void tick(),250);window.setInterval(()=>void refresh(),2000);
+  updateActivity();scan();void refresh();
+  const ticks=window.setInterval(()=>void tick(),250),refreshes=window.setInterval(()=>void refresh(),2000);
+  return ()=>{clearInterval(ticks);clearInterval(refreshes);observer.disconnect();mutations.disconnect();chrome.runtime.onMessage.removeListener(onMessage);clearVisuals();activity?.remove();};
 }

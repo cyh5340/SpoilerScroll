@@ -21,7 +21,8 @@ test('fixture SQL reader binds install attribution, marker aggregation, limits a
   const result = await reader.recentViewed(installId,new Date('2026-10-01'),12);
   assert.equal(result.status,'available');
   assert.match(sql,/count\("ContentViewed"\)/);
-  assert.match(sql,/FILTER \(WHERE "ContentViewed" IS NOT NULL\)/);
+  assert.match(sql,/event_datetime AS viewed_at/);
+  assert.match(sql,/GROUP BY install_id, content_id, site, summary_id, agent_id, viewed_at/);
   assert.match(sql,/LIMIT 12$/);
   assert.ok(sql.includes(`user_id = '${installId}'`));
   const mismatch = new KeewanoHistoryReader({query:async()=>({rows:[{install_id:'different'}]})});

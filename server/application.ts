@@ -55,6 +55,7 @@ export function createApplication(runtime:Runtime) {
       if(req.method==='GET' && url.pathname==='/decisions') {
         const id=url.searchParams.get('observationId');if(!id || !uuid.test(id))return send(400,{error:'observationId required'});
         const decision=await runtime.pipeline.get(installId,id);
+        if(decision.status==='unavailable')console.log(`[SpoilerScroll] Detection unavailable: ${decision.reason}; ${runtime.status().history}`);
         if(decision.status==='ready' && decision.intervene)console.log(`[SpoilerScroll] Repeat detected: ${decision.matchedContentIds.length} prior posts`);
         return send(200,decision);
       }

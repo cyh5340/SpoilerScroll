@@ -49,7 +49,9 @@ run(async()=>{
   if(tab?.id!==undefined && tab.url && allowedRedditPage(tab.url)) {
     try {
       await chrome.scripting.executeScript({target:{tabId:tab.id},files:['content.js']});
-      $('tab-status').textContent='Page script connected. Close this popup to resume view capture.';
+      const page=await chrome.tabs.sendMessage(tab.id,{type:'PAGE_STATUS'});
+      if(!page?.connected)throw new Error('No page handshake');
+      $('tab-status').textContent=`Page connected (${page.build}) · ${page.cards} detected posts. ${page.error || (page.active?'Close this popup to resume capture.':'Monitoring is inactive; enable Reddit or resume spoilers.')}`;
     }catch {
       $('tab-status').textContent='Page script could not connect. Click “Allow Reddit and connect”, then refresh the Reddit tab.';
     }

@@ -98,11 +98,11 @@ async function handle(message:Message,sender:chrome.runtime.MessageSender):Promi
       const repeat=message.candidate.contentId==='fixture-4' && prior.length===3;
       return {ok:true,decision:{status:'ready',intervene:repeat,matchedContentIds:repeat?prior:[],scope:'preview',spoiler:repeat?'This preview repeats the claim that AI automates routine programming tasks while developers still review the results. You have seen that same claim in three demo previews.':undefined,reason:'Scripted local fixture. No model, Darwin, or Keewano calls. The five-minute browsing gate is disabled for this demo.'}};
     }
-    const fingerprint=JSON.stringify(message.candidate),version=`${state.sessionId}:${state.stats.views}`;
+    const fingerprint=JSON.stringify(message.candidate),version=`${state.sessionId}:${state.stats.views}:${message.pageEnteredAt??''}:${Math.floor(Date.now()/15000)}`;
     const saved=state.candidateIds?.[message.candidate.contentId];
     const id=saved?.fingerprint===fingerprint && saved.version===version?saved.id:crypto.randomUUID();
     await serial(async()=>{const current=await load();current.candidateIds??={};current.candidateIds[message.candidate.contentId]={id,fingerprint,version};await save(current);});
-    await prepareCandidate({...message.candidate,observationId:id,installId:state.installId,sessionId:state.sessionId,dwellSeconds:0},state.settings.pairingToken);
+    await prepareCandidate({...message.candidate,observationId:id,installId:state.installId,sessionId:state.sessionId,dwellSeconds:0,...(message.pageEnteredAt!==undefined?{pageEnteredAt:message.pageEnteredAt}:{})},state.settings.pairingToken);
     const decision=await getDecision(state.installId,id,state.settings.pairingToken);
     const current=await serial(load);
     return {ok:true,decision:await permitted(current,sender)?decision:unavailable};
@@ -160,7 +160,7 @@ async function handle(message:Message,sender:chrome.runtime.MessageSender):Promi
       }
     } else if(message.type==='CLAIM') {
       renewSession(state);
-      if(state.intervened.includes(message.candidate.contentId) || Date.now()-state.lastIntervention<COOLDOWN_MS)return{ok:true,claimed:false};
+      if(!message.explicit && (state.intervened.includes(message.candidate.contentId) || Date.now()-state.lastIntervention<COOLDOWN_MS))return{ok:true,claimed:false};
       state.lastIntervention=Date.now();state.intervened.push(message.candidate.contentId);await save(state);return {ok:true,claimed:true};
     } else if(message.type==='ACTION') {
       if(!['SpoilerShown','SpoilerSkipped','ReadAnyway','FalsePositiveReported'].includes(message.action))throw new Error('Unknown action');

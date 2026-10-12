@@ -67,3 +67,18 @@ test('history failure suppresses intervention and pending records resume after r
   await restarted.drain();
   assert.equal((await restarted.get('install-1', 'history-failed')).intervene, true);
 }));
+test('same-post click reminder requires a prior Keewano-confirmed view',()=>setup(async(p,store,viewed)=>{
+  await p.observe(observation('original'));await p.drain();
+  viewed.push({observationId:'original',contentId:'original',scope:'preview'});
+  const prior=Object.values((await store.read()).records)[0];
+  const confirmed=new DecisionPipeline(store,new FixtureProvider(),{lookup:async()=>({status:'ready',source:'keewano',fetchedAt:new Date().toISOString(),viewed})});
+  await confirmed.observe({...observation('current-visit'),contentId:'original',dwellSeconds:0,pageEnteredAt:Date.parse(prior.receivedAt)-1});await confirmed.drain();
+  assert.equal((await confirmed.get('install-1','current-visit')).intervene,true);
+  await confirmed.observe({...observation('reopened'),contentId:'original',dwellSeconds:0,pageEnteredAt:Date.parse(prior.receivedAt)+1});await confirmed.drain();
+  const result=await confirmed.get('install-1','reopened');
+  assert.equal(result.intervene,true);assert.equal(result.reason,'same_post_previously_viewed_keewano_confirmed');
+  const unavailable=new DecisionPipeline(store,new FixtureProvider(),{lookup:async()=>({status:'unavailable',source:'keewano',fetchedAt:new Date().toISOString(),viewed})});
+  await unavailable.observe({...observation('offline-reopen'),contentId:'original',pageEnteredAt:Date.parse(prior.receivedAt)+1});await unavailable.drain();
+  assert.equal((await unavailable.get('install-1','offline-reopen')).intervene,false);
+  assert.equal((await unavailable.get('install-1','offline-reopen')).reason,'keewano_history_unavailable');
+}));

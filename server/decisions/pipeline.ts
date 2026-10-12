@@ -54,7 +54,18 @@ export class DecisionPipeline {
   private async work() {
     while (true) {
       const state = await this.store.read();
-      const record = Object.values(state.records).find(r => state.decisions[r.id]?.decision.status === 'pending');
+      const pending=Object.values(state.records).filter(r=>state.decisions[r.id]?.decision.status==='pending').sort((a,b)=>b.receivedAt.localeCompare(a.receivedAt));
+      const obsolete:string[]=[];
+      const newest=new Set<string>();
+      for(const item of pending) {
+        if(item.observation.dwellSeconds!==0)continue;
+        const key=JSON.stringify([item.observation.installId,item.observation.sessionId,item.observation.contentId]);
+        if(newest.has(key) || Date.parse(item.receivedAt)<Date.now()-(this.options.ttlMs??300000))obsolete.push(item.id);
+        else newest.add(key);
+      }
+      if(obsolete.length)await this.store.update(s=>{for(const id of obsolete)if(s.decisions[id]?.decision.status==='pending')s.decisions[id]={decision:{status:'unavailable',intervene:false,matchedContentIds:[],reason:'superseded_preview'},expiresAt:Date.now()+300000};});
+      const discarded=new Set(obsolete);
+      const record=pending.find(r=>!discarded.has(r.id));
       if (!record) return;
       await this.process(record);
     }
@@ -70,6 +81,10 @@ export class DecisionPipeline {
       history = await bounded(this.history.lookup({ installId: o.installId, sessionId: o.sessionId, before: record.receivedAt }));
       if (history.status !== 'ready' || Date.now() - Date.parse(history.fetchedAt) > (this.options.historyMaxAgeMs ?? 300000) || !Number.isFinite(Date.parse(history.fetchedAt)) || Date.parse(history.fetchedAt) > Date.now() + 5000 || (this.provider.mode === 'model' && history.source === 'fixture')) throw new Error('History unavailable');
       const state = await this.store.read();
+      const previousView=['keewano','cache'].includes(history.source) && o.pageEnteredAt!==undefined ? history.viewed.flatMap(view=>{
+        const prior=state.records[observationKey(o.installId,view.observationId)];
+        return prior && prior.observation.contentId===o.contentId && view.contentId===o.contentId && prior.observation.installId===o.installId && prior.observation.dwellSeconds>=3 && Date.parse(prior.receivedAt)<Date.parse(record.receivedAt) ? [prior] : [];
+      })[0] : undefined;
       const candidates = history.viewed.flatMap(view => {
         const r = state.records[observationKey(o.installId, view.observationId)];
         return r && r.observation.contentId === view.contentId && r.observation.scope === view.scope && r.observation.contentId !== o.contentId && r.receivedAt < record.receivedAt && r.understanding && r.provenance.mode === record.provenance.mode && r.provenance.provider === record.provenance.provider && r.provenance.revision === record.provenance.revision ? [r] : [];
@@ -87,7 +102,10 @@ export class DecisionPipeline {
       decision = { status: 'ready', intervene, scope: o.scope, matchedContentIds: ids,
         reason: prefix + (intervene ? 'all_scoped_claims_repeated' : understanding.complete ? 'new_or_insufficient_repeated_evidence' : 'unknown_evidence'),
         ...(intervene ? { spoiler: `${prefix}${o.scope === 'preview' ? 'This preview repeats' : 'This extracted text repeats'}: “${understanding.claims[0].quote.slice(0, 500)}”${o.scope === 'preview' ? ' We could only read the preview.' : ''}` } : {}) };
-    } catch { /* Never invent a summary or turn a failed provider into a fixture result. */ }
+      if(previousView)decision={status:'ready',intervene:true,scope:'preview',matchedContentIds:[o.contentId],reason:history.source==='keewano'?'same_post_previously_viewed_keewano_confirmed':'same_post_previously_viewed_local',spoiler:`You already viewed this post: “${previousView.observation.title}”. Previously captured preview: “${previousView.observation.visibleText.slice(0,500)}”. This is a reminder of the preview, not a summary of unseen content.`};
+    } catch {
+      if(history?.status==='unavailable')decision.reason='keewano_history_unavailable';
+    }
     await this.store.update(state => {
       if (state.records[record.id]) state.decisions[record.id] = { decision, expiresAt: Date.now() + (this.options.ttlMs ?? 300000), history, matches };
     });

@@ -7,7 +7,7 @@ import type { HistoryReader } from './contracts.js';
 export function keewanoBehaviorHistory(store: ContentStore, reader: HistoryReader,
   report: (status: string) => void): HistoryLookup {
   return {lookup: async ({installId, sessionId, before}) => {
-    const beforeMs = Date.parse(before), since = new Date(beforeMs - 15 * 60_000);
+    const beforeMs = Date.parse(before), since = new Date(beforeMs - 24 * 60 * 60_000);
     const fetchedAt = new Date().toISOString();
     const unavailable = (reason: string): HistorySnapshot => {
       report(`Detection unavailable: Keewano history ${reason}`);
@@ -24,7 +24,7 @@ export function keewanoBehaviorHistory(store: ContentStore, reader: HistoryReade
         const at = Date.parse(item.viewedAt);
         if (item.installId !== installId || !Number.isFinite(at) || at < since.getTime() || at >= beforeMs || !item.summaryId) continue;
         const record = records.get(item.summaryId);
-        if (!record || record.observation.installId !== installId || record.observation.sessionId !== sessionId ||
+        if (!record || record.observation.installId !== installId ||
           record.observation.contentId !== item.contentId || record.observation.site !== item.site ||
           record.observation.dwellSeconds < 3 || Date.parse(record.receivedAt) >= beforeMs) continue;
         viewed.set(record.id, {observationId: record.observation.observationId,
