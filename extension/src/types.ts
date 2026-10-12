@@ -20,6 +20,7 @@ export interface Store {
   candidateIds?: Record<string, {id: string; fingerprint: string; version: string}>;
   backendMode?: string;
   observationIds?: Record<string, {id: string; fingerprint: string}>;
+  clickedPosts?:Record<string,{at:number;candidate:Candidate}>;
   seen: string[]; queue: QueueItem[]; fixtureSeen: string[];
   stats: {views: number; repeats: number; skipped: number; continued: number};
   delivery: string; lastIntervention: number; intervened: string[];
@@ -29,6 +30,7 @@ export type Message =
  | {type: 'PAIR'}
  | {type: 'SETTINGS'; patch: Partial<Settings>}
  | {type: 'OBSERVE'; candidate: Candidate; dwellSeconds: number}
+ | {type: 'POST_CLICK';candidate:Candidate}
  | {type: 'DECISION'; candidate: Candidate; pageEnteredAt?:number}
  | {type: 'ACTION'; candidate: Candidate; action: Action}
  | {type: 'CLAIM'; candidate: Candidate; explicit?:boolean}

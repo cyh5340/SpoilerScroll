@@ -166,21 +166,24 @@ function start() {
     const target=new URL(card.candidate.url);target.search='';target.hash='';
     if(fixture?anchor.dataset.story!==card.candidate.contentId:href.href.replace(/\/$/,'')!==target.href.replace(/\/$/,''))return;
     const cached=decisions.get(card.candidate.contentId);
-    if(!cached || cached.key!==candidateKey(card.candidate) || Date.now()-cached.at>30_000 || cached.decision.status!=='ready' || !cached.decision.intervene || !cached.decision.spoiler)return;
+    const prepared=cached && cached.key===candidateKey(card.candidate) && Date.now()-cached.at<=30_000 && cached.decision.status==='ready' && cached.decision.intervene && cached.decision.spoiler ? cached.decision : undefined;
+    if(fixture && !prepared)return;
     event.preventDefault();event.stopImmediatePropagation();claiming=true;
     const destination=anchor.href,version=epoch;
-    void send({type:'CLAIM',candidate:card.candidate,explicit:true}).then(reply=>{
+    // Persist the first click before navigating. Repeated clicks use only extension storage.
+    void (fixture ? send({type:'CLAIM',candidate:card.candidate,explicit:true}) : send({type:'POST_CLICK',candidate:card.candidate})).then(reply=>{
       claiming=false;
-      if(!reply.ok || !reply.claimed || !active() || version!==epoch){location.assign(destination);return;}
+      const decision=reply.decision??prepared;
+      if(!reply.ok || (fixture && !reply.claimed) || !decision?.intervene || !decision.spoiler || !active() || version!==epoch){location.assign(destination);return;}
       void send({type:'ACTION',candidate:card.candidate,action:'SpoilerShown'});
       closeOverlay?.();
-      closeOverlay=showOverlay(card.candidate,cached.decision,anchor,fixture,action=>{
+      closeOverlay=showOverlay(card.candidate,decision,anchor,fixture,action=>{
         if(action==='pause'){void send({type:'SETTINGS',patch:{paused:true}}).then(refresh);return;}
         const type=action==='skip'?'SpoilerSkipped':action==='read'?'ReadAnyway':'FalsePositiveReported';
         void send({type:'ACTION',candidate:card.candidate,action:type});
         if(action==='read')location.assign(destination);
         if(action==='feedback'){decisions.delete(card.candidate.contentId);badges.get(card.element)?.remove();}
-      });
+      },()=>{closeOverlay=undefined;});
     }).catch(()=>{claiming=false;location.assign(destination);});
   },true);
   if(fixture)document.querySelector('[data-reset]')?.addEventListener('click',()=>{

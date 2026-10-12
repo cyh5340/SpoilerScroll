@@ -141,6 +141,16 @@ async function handle(message:Message,sender:chrome.runtime.MessageSender):Promi
     }
     if(!await permitted(state,sender))return {ok:false,error:'Monitoring is paused or unavailable'};
     validCandidate(message.candidate,fixtureSender(sender));
+    if(message.type==='POST_CLICK') {
+      const previous=state.clickedPosts?.[message.candidate.contentId];
+      state.clickedPosts??={};
+      state.clickedPosts[message.candidate.contentId]={at:Date.now(),candidate:message.candidate};
+      for(const [id,item]of Object.entries(state.clickedPosts))if(Date.now()-item.at>86400000)delete state.clickedPosts[id];
+      const entries=Object.entries(state.clickedPosts).sort((a,b)=>b[1].at-a[1].at);
+      state.clickedPosts=Object.fromEntries(entries.slice(0,500));
+      await save(state);
+      return {ok:true,...(previous && Date.now()-previous.at<=86400000?{decision:{status:'ready' as const,intervene:true,scope:'preview' as const,matchedContentIds:[message.candidate.contentId],reason:'same_post_clicked_before_local',spoiler:`You already clicked this post: “${previous.candidate.title}”. Captured preview: “${previous.candidate.visibleText.slice(0,500)}”. This reminder uses the visible preview only.`}}:{})};
+    }
     if(message.type==='OBSERVE') {
       if(!Number.isFinite(message.dwellSeconds) || message.dwellSeconds<3 || message.dwellSeconds>3600)throw new Error('Invalid dwell');
       if(sender.tab?.id!==undefined) {
