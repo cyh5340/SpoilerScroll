@@ -1,145 +1,102 @@
-import { scanCards, extractCard, candidateKey, type Card } from './adapter';
-import { allowedRedditPage, DwellTracker, normalNavigation } from './policy';
-import { createBadge, showOverlay } from './overlay';
-import { send, type Decision, type Store, type Candidate } from './types';
+import { scanCards, candidateKey, type Card } from './adapter';
+import { clickIntent, supportedPage } from './policy';
+import { createBadge, createNotice, showOverlay } from './overlay';
+import { canonicalUrl, type HistoryMatch } from './match';
+import { send, type Store } from './types';
 
 const marker='__spoilerScrollLoaded';
 const win=window as unknown as Record<string,unknown>;
 const previous=win[marker] as {alive?:()=>boolean;stop?:()=>void}|undefined;
 if(!previous || typeof previous.alive!=='function' || !previous.alive()) {
   previous?.stop?.();
-  document.querySelectorAll('[data-spoilerscroll-ui="activity"]').forEach(el=>el.remove());
+  document.querySelectorAll('[data-spoilerscroll-ui]').forEach(el=>el.remove());
   win[marker]={alive:()=>{try{return !!chrome.runtime.getManifest();}catch{return false;}},stop:start()};
 }
 function start() {
   const fixture=location.href.startsWith(chrome.runtime.getURL('fixture.html'));
-  const tracker=new DwellTracker();
   let state:Store|undefined;
   let closeOverlay:(()=>void)|undefined;
   const cards=new Map<HTMLElement,Card>();
-  const ratios=new Map<HTMLElement,number>();
-  const decisions=new Map<string,{decision:Decision;key:string;at:number}>();
-  const pending=new Set<string>();
-  const autoAttempted=new Set<string>();
+  let matches:Record<string,HistoryMatch[]>={},counts:Record<string,number>={};
   const badges=new Map<HTMLElement,HTMLElement>();
-  let decisionRequests=0;
+  let notice:ReturnType<typeof createNotice>|undefined;
+  let error='';
+  let lookedUp='';
   let epoch=0;
-  let lastUrl=location.href;
-  let pageEnteredAt=Date.now();
-  let entrySeen:Set<string>|undefined;
-  let activity:HTMLElement|undefined;
-  let activityError='';
-  function updateActivity() {
-    if(fixture || !allowedRedditPage(location.href)){activity?.remove();activity=undefined;return;}
-    if(!activity) {
-      activity=document.createElement('div');activity.dataset.spoilerscrollUi='activity';
-      activity.style.cssText='position:fixed;bottom:16px;right:16px;z-index:2147483646;pointer-events:none';
-      const root=activity.attachShadow({mode:'open'});
-      const label=document.createElement('span');
-      label.style.cssText='display:block;background:#163d33;color:#fff;padding:10px 14px;border-radius:12px;font:12px/1.5 system-ui;box-shadow:0 2px 12px #0003;white-space:pre-line';
-      root.append(label);document.documentElement.append(activity);
-    }
-    const label=activity.shadowRoot!.firstElementChild!;
-    label.textContent=activityError?`SpoilerScroll · ${activityError}`:!state?'SpoilerScroll · Connecting…':!active()?`SpoilerScroll · ${state.settings.paused?'Paused':state.settings.mode!=='live'?'Demo mode — enable Reddit in the extension':'Open the extension to enable Reddit'}`:`SpoilerScroll · Monitoring ${cards.size} previews\n${state.stats.views} captured · ${state.queue.length} queued\n${state.delivery}`;
+  // True until a lookup that started after the latest history change has finished.
+  let stale=true,generation=0;
+  const active=()=>!!state && !state.settings.paused && (fixture || (state.settings.enabled && supportedPage(location.href)));
+  function updateNotice() {
+    const flagged=[...cards.values()].filter(c=>matches[c.candidate.contentId]).length;
+    if(!fixture && !active() && !error){notice?.host.remove();notice=undefined;return;}
+    notice??=createNotice(fixture);
+    const days=state?.settings.rangeDays===1?'day':`${state?.settings.rangeDays} days`;
+    notice.set(error?`SpoilerScroll · ${error}`:!state?'SpoilerScroll · Connecting…':state.settings.paused?'SpoilerScroll · Paused':!active()?'SpoilerScroll · Open the extension to enable it':
+      `SpoilerScroll · ${flagged} of ${cards.size} links here match pages\nfrom your history (last ${days})`);
   }
-  const active=()=>!!state && !state.settings.paused && (fixture?state.settings.mode==='fixture':state.settings.mode==='live'&&state.settings.redditEnabled&&state.settings.remoteConsent&&allowedRedditPage(location.href));
-  function clearVisuals() {for(const badge of badges.values())badge.remove();badges.clear();closeOverlay?.();closeOverlay=undefined;decisions.clear();tracker.resetAll();}
+  function renderBadges() {
+    for(const [element,card] of cards) {
+      const count=counts[card.candidate.contentId]??0;
+      const badge=badges.get(element);
+      if(badge && badge.dataset.count!==String(count)){badge.remove();badges.delete(element);}
+      if(count && !badges.has(element)) {
+        const next=createBadge(fixture,count);next.dataset.count=String(count);
+        // A bare link gets its badge right after it; a post card gets it inside, at the end.
+        if(element instanceof HTMLAnchorElement)element.after(next);else element.append(next);
+        badges.set(element,next);
+      }
+    }
+  }
+  function clearVisuals() {for(const badge of badges.values())badge.remove();badges.clear();closeOverlay?.();closeOverlay=undefined;matches={};counts={};lookedUp='';}
+  async function lookup(force=false) {
+    if(!active())return;
+    const list=[...cards.values()].map(c=>c.candidate);
+    const key=JSON.stringify([location.href,list.map(candidateKey)]);
+    if(!force && key===lookedUp)return;
+    lookedUp=key;
+    const version=epoch,started=generation;
+    try {
+      const reply=await send({type:'MATCH',cards:list,pageUrl:location.href,pageTitle:document.title});
+      if(version!==epoch || !active())return;
+      if(!reply.ok){error=reply.error??'History lookup failed';lookedUp='';}
+      else {error='';matches=reply.matches??{};counts=reply.counts??{};renderBadges();if(started===generation)stale=false;}
+    } catch {error='Extension reloaded — refresh this tab';}
+    updateNotice();
+  }
+  function historyChanged() {generation++;stale=true;void lookup(true);}
   async function refresh() {
     try {
       const reply=await send({type:'STATE'});
-      if(!reply.ok || !reply.state){state=undefined;activityError=reply.error??'Open the extension to reconnect';clearVisuals();updateActivity();return;}
-      activityError='';
-      const previous=state;
+      if(!reply.ok || !reply.state){state=undefined;error=reply.error??'Open the extension to reconnect';clearVisuals();updateNotice();return;}
+      const before=JSON.stringify(state?.settings);
       state=reply.state;
-      entrySeen??=new Set(state.seen);
-      if(previous && (previous.settings.paused!==state.settings.paused || previous.settings.mode!==state.settings.mode || previous.sessionId!==state.sessionId || previous.settings.redditEnabled!==state.settings.redditEnabled)) {epoch++;clearVisuals();}
-      if(!active())clearVisuals();else scan();
-      updateActivity();
-      if(fixture) {
-        document.querySelector('[data-view-count]')!.textContent=String(state.fixtureSeen.filter(id=>['fixture-1','fixture-2','fixture-3'].includes(id)).length);
-        document.querySelector('[data-fixture-state]')!.textContent=state.settings.paused?'Paused':state.settings.mode==='fixture'?'Local fixture mode':'Live mode is selected; open the popup to switch to demo';
-      }
-    } catch {state=undefined;activityError='Extension reloaded — refresh this Reddit tab';clearVisuals();updateActivity();}
+      if(before!==JSON.stringify(state.settings)){epoch++;clearVisuals();}
+      if(fixture)document.querySelector('[data-fixture-state]')!.textContent=state.settings.paused?'Paused':`Matching titles that share at least ${state.settings.minShared} words`;
+      if(active()){scan();await lookup();}
+      updateNotice();
+    } catch {state=undefined;error='Extension reloaded — refresh this tab';clearVisuals();updateNotice();}
   }
-  const observer=new IntersectionObserver(entries=>{
-    for(const entry of entries)ratios.set(entry.target as HTMLElement,entry.intersectionRatio);
-  },{threshold:[0,.5,1]});
+  let lastUrl=location.href;
   function scan() {
+    if(lastUrl!==location.href){lastUrl=location.href;epoch++;clearVisuals();cards.clear();}
     if(!active())return;
-    for(const [element,card] of cards)if(!element.isConnected) {
-      observer.unobserve(element);cards.delete(element);ratios.delete(element);badges.get(element)?.remove();badges.delete(element);tracker.reset(card.candidate.contentId);
-    }
-    for(const card of scanCards(fixture)) {
+    const found=scanCards(fixture);
+    // The scan is the whole truth: drop links that are gone or no longer chosen for their address.
+    const current=new Set(found.map(c=>c.element));
+    for(const [element] of cards)if(!current.has(element)){cards.delete(element);badges.get(element)?.remove();badges.delete(element);}
+    for(const card of found) {
       const old=cards.get(card.element);
       if(old && candidateKey(old.candidate)===candidateKey(card.candidate))continue;
-      if(old) {badges.get(card.element)?.remove();badges.delete(card.element);decisions.delete(old.candidate.contentId);tracker.reset(old.candidate.contentId);}
-      cards.set(card.element,card);observer.observe(card.element);
+      if(old){badges.get(card.element)?.remove();badges.delete(card.element);}
+      cards.set(card.element,card);
     }
+    void lookup();
   }
-  async function prepare(card:Card) {
-    const c=card.candidate,key=candidateKey(c),version=epoch;
-    if(pending.has(c.contentId) || decisionRequests>=2 || (decisions.get(c.contentId)?.key===key && Date.now()-(decisions.get(c.contentId)?.at??0)<(decisions.get(c.contentId)?.decision.status==='ready'?10_000:1500)))return;
-    pending.add(c.contentId);decisionRequests++;
-    try {
-      const reply=await send({type:'DECISION',candidate:c,pageEnteredAt});
-      const latest=extractCard(card.element,fixture);
-      if(version!==epoch || !active() || !card.element.isConnected || !latest || candidateKey(latest.candidate)!==key)return;
-      if(reply.decision) {
-        if(reply.decision.reason==='keewano_history_unavailable')activityError='Detection unavailable: configure Keewano read credentials';
-        decisions.set(c.contentId,{decision:reply.decision,key,at:Date.now()});
-        badges.get(card.element)?.remove();badges.delete(card.element);
-        if(reply.decision.status==='ready' && reply.decision.intervene) {
-          const badge=createBadge(fixture,reply.decision.matchedContentIds.length);card.element.append(badge);badges.set(card.element,badge);
-          if(!fixture && !closeOverlay && !autoAttempted.has(c.contentId) && (!reply.decision.reason?.startsWith('same_post_previously_viewed_') || entrySeen?.has(c.contentId)) && document.hasFocus() && document.visibilityState==='visible') {
-            const rect=card.element.getBoundingClientRect();
-            const visible=Math.max(0,Math.min(rect.bottom,innerHeight)-Math.max(rect.top,0));
-            const opener=card.element.querySelector<HTMLAnchorElement>('a[href*="/comments/"]');
-            if(opener && visible/Math.max(1,Math.min(rect.height,innerHeight))>=.5) {
-              autoAttempted.add(c.contentId);
-              const claim=await send({type:'CLAIM',candidate:c});
-              if(claim.ok && claim.claimed && active() && version===epoch && !closeOverlay && document.hasFocus()) {
-                void send({type:'ACTION',candidate:c,action:'SpoilerShown'});
-                closeOverlay=showOverlay(c,reply.decision,opener,false,action=>{
-                  if(action==='pause'){void send({type:'SETTINGS',patch:{paused:true}}).then(refresh);return;}
-                  void send({type:'ACTION',candidate:c,action:action==='skip'?'SpoilerSkipped':action==='read'?'ReadAnyway':'FalsePositiveReported'});
-                  closeOverlay=undefined;
-                  if(action==='read')location.assign(c.url);
-                },()=>{closeOverlay=undefined;});
-              }
-            }
-          }
-        }
-      }
-      if(!reply.ok){activityError=reply.error??'Preview check failed';updateActivity();}
-    } catch {activityError='Preview check failed — check backend connection';updateActivity();}
-    finally {pending.delete(c.contentId);decisionRequests--;}
-  }
-  async function tick() {
-    if(lastUrl!==location.href) {lastUrl=location.href;pageEnteredAt=Date.now();entrySeen=new Set(state?.seen??[]);epoch++;clearVisuals();scan();}
-    if(!active())return;
-    const focused=document.visibilityState==='visible' && document.hasFocus();
-    for(const card of cards.values()) {
-      const latest=extractCard(card.element,fixture);
-      if(!latest || candidateKey(latest.candidate)!==candidateKey(card.candidate)){tracker.reset(card.candidate.contentId);continue;}
-      const rect=card.element.getBoundingClientRect();
-      const visibleHeight=Math.max(0,Math.min(rect.bottom,innerHeight)-Math.max(rect.top,0));
-      const ratio=rect.width>0 && rect.right>0 && rect.left<innerWidth ? visibleHeight/Math.max(1,Math.min(rect.height,innerHeight)) : 0;
-      if(tracker.update(card.candidate.contentId,ratio,focused,performance.now())) {
-        try {
-          const reply=await send({type:'OBSERVE',candidate:card.candidate,dwellSeconds:3});
-          if(!reply.ok)tracker.retry(card.candidate.contentId);
-          else {decisions.clear();await refresh();}
-        } catch {tracker.retry(card.candidate.contentId);}
-      }
-      if(ratio>0 && focused)void prepare(card);
-    }
-  }
-  document.addEventListener('visibilitychange',()=>{tracker.resetAll();});
-  window.addEventListener('blur',()=>tracker.resetAll());
   const onMessage=(message:{type:string},_sender:chrome.runtime.MessageSender,respond:(reply:unknown)=>void)=>{
     if(message.type==='CONFIG_CHANGED'){epoch++;clearVisuals();void refresh();}
+    if(message.type==='HISTORY_CHANGED')historyChanged();
     if(message.type==='PAGE_STATUS') {
-      void refresh().then(()=>respond({connected:true,build:'reconnect-2',supported:allowedRedditPage(location.href),active:active(),cards:cards.size,error:activityError}));
+      void refresh().then(()=>respond({connected:true,active:active(),cards:cards.size,flagged:Object.keys(matches).length,error}));
       return true;
     }
   };
@@ -147,49 +104,53 @@ function start() {
   let scanScheduled=false;
   const mutations=new MutationObserver(()=>{
     if(scanScheduled)return;scanScheduled=true;
-    window.setTimeout(()=>{scanScheduled=false;scan();},200);
+    window.setTimeout(()=>{scanScheduled=false;scan();updateNotice();},200);
   });
   mutations.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['post-title','permalink','content-href','data-content-id']});
-  let claiming=false;
-  document.addEventListener('click',event=>{
-    if(!active() || claiming)return;
+  // Window capture runs before the page's own document/element handlers, which may navigate by script.
+  const onClick=(event:MouseEvent)=>{
+    if(!active() || !state)return;
     const path=event.composedPath();
     const anchor=path.find(node=>node instanceof HTMLAnchorElement) as HTMLAnchorElement|undefined;
-    if(!anchor || !normalNavigation(event,{target:anchor.target,download:anchor.hasAttribute('download')}))return;
-    const element=path.find(node=>node instanceof HTMLElement && cards.has(node)) as HTMLElement|undefined;
-    const card=element?cards.get(element):undefined;
-    if(!card)return;
-    const current=extractCard(card.element,fixture);
-    if(!current || candidateKey(current.candidate)!==candidateKey(card.candidate))return;
-    // Intercept the post destination only; votes, community/author links and other controls stay native.
-    const href=new URL(anchor.href);href.search='';href.hash='';
-    const target=new URL(card.candidate.url);target.search='';target.hash='';
-    if(fixture?anchor.dataset.story!==card.candidate.contentId:href.href.replace(/\/$/,'')!==target.href.replace(/\/$/,''))return;
-    const cached=decisions.get(card.candidate.contentId);
-    const prepared=cached && cached.key===candidateKey(card.candidate) && Date.now()-cached.at<=30_000 && cached.decision.status==='ready' && cached.decision.intervene && cached.decision.spoiler ? cached.decision : undefined;
-    if(fixture && !prepared)return;
-    event.preventDefault();event.stopImmediatePropagation();claiming=true;
-    const destination=anchor.href,version=epoch;
-    // Persist the first click before navigating. Repeated clicks use only extension storage.
-    void (fixture ? send({type:'CLAIM',candidate:card.candidate,explicit:true}) : send({type:'POST_CLICK',candidate:card.candidate})).then(reply=>{
-      claiming=false;
-      const decision=reply.decision??prepared;
-      if(!reply.ok || (fixture && !reply.claimed) || !decision?.intervene || !decision.spoiler || !active() || version!==epoch){location.assign(destination);return;}
-      void send({type:'ACTION',candidate:card.candidate,action:'SpoilerShown'});
-      closeOverlay?.();
-      closeOverlay=showOverlay(card.candidate,decision,anchor,fixture,action=>{
-        if(action==='pause'){void send({type:'SETTINGS',patch:{paused:true}}).then(refresh);return;}
-        const type=action==='skip'?'SpoilerSkipped':action==='read'?'ReadAnyway':'FalsePositiveReported';
-        void send({type:'ACTION',candidate:card.candidate,action:type});
-        if(action==='read')location.assign(destination);
-        if(action==='feedback'){decisions.delete(card.candidate.contentId);badges.get(card.element)?.remove();}
-      },()=>{closeOverlay=undefined;});
-    }).catch(()=>{claiming=false;location.assign(destination);});
-  },true);
-  if(fixture)document.querySelector('[data-reset]')?.addEventListener('click',()=>{
-    void send({type:'RESET_FIXTURE'}).then(()=>location.assign(chrome.runtime.getURL('fixture.html')));
-  });
-  updateActivity();scan();void refresh();
-  const ticks=window.setInterval(()=>void tick(),250),refreshes=window.setInterval(()=>void refresh(),2000);
-  return ()=>{clearInterval(ticks);clearInterval(refreshes);observer.disconnect();mutations.disconnect();chrome.runtime.onMessage.removeListener(onMessage);clearVisuals();activity?.remove();};
+    const intent=anchor?clickIntent(event,{target:anchor.target,download:anchor.hasAttribute('download')}):null;
+    if(!anchor || !intent || (event.type==='auxclick' && event.button!==1))return;
+    if(anchor.closest('[data-spoilerscroll-ui]') || (!fixture && !/^https?:$/.test(anchor.protocol)))return;
+    // Any link to a flagged page is caught, not only the one the scan recorded.
+    const key=fixture?anchor.dataset.story:canonicalUrl(anchor.href);
+    if(!key)return;
+    const card=[...cards.values()].find(c=>c.candidate.contentId===key);
+    if(fixture && !card)return;
+    const candidate=card?.candidate??{contentId:key,url:anchor.href,title:anchor.innerText.trim().slice(0,500),text:''};
+    const found=matches[candidate.contentId];
+    // A link the last lookup covered and cleared opens natively.
+    if(!found && !stale && card)return;
+    event.preventDefault();event.stopImmediatePropagation();
+    const destination=anchor.href;
+    const open=()=>{if(intent==='new')window.open(destination,'_blank','noopener');else location.assign(destination);};
+    if(found){present(candidate,found,counts[candidate.contentId]??found.length,anchor,open);return;}
+    // History changed since the last lookup (e.g. back from this very post), or the link is new: check it live.
+    void send({type:'MATCH',cards:[candidate],pageUrl:location.href,pageTitle:document.title}).then(reply=>{
+      const live=reply.ok?reply.matches?.[candidate.contentId]:undefined;
+      if(live && active())present(candidate,live,reply.counts?.[candidate.contentId]??live.length,anchor,open);else open();
+    }).catch(open);
+  };
+  window.addEventListener('click',onClick,true);
+  window.addEventListener('auxclick',onClick,true);
+  function present(candidate:Card['candidate'],found:HistoryMatch[],total:number,anchor:HTMLAnchorElement,open:()=>void) {
+    if(!state)return;
+    void send({type:'ACTION',action:'shown'});
+    closeOverlay?.();
+    closeOverlay=showOverlay(candidate,found,total,state.settings.rangeDays,anchor,fixture,action=>{
+      if(action==='pause'){void send({type:'SETTINGS',patch:{paused:true}}).then(refresh);return;}
+      void send({type:'ACTION',action:action==='skip'?'skipped':'continued'});
+      if(action==='read')open();
+    },()=>{closeOverlay=undefined;});
+  }
+  // Back/forward cache restores this page with results from before the visit; recheck at once.
+  window.addEventListener('pageshow',event=>{if(event.persisted)historyChanged();});
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')historyChanged();});
+  updateNotice();void refresh();
+  // History changes as the user browses; refresh matches without waiting for new cards.
+  const refreshes=window.setInterval(()=>{void refresh().then(()=>lookup(true));},5000);
+  return ()=>{window.removeEventListener('click',onClick,true);window.removeEventListener('auxclick',onClick,true);clearInterval(refreshes);mutations.disconnect();chrome.runtime.onMessage.removeListener(onMessage);clearVisuals();notice?.host.remove();};
 }

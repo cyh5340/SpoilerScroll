@@ -1,6 +1,6 @@
 # SpoilerScroll design plan
 
-Status: proposed MVP design, October 11, 2026. Based on the web conversation supplied by the user. No implementation or live integration has been completed.
+> **Superseded (October 16, 2026).** SpoilerScroll is now an extension-only browser-history lookup: post titles are compared word-for-word with Chrome history titles within a chosen time range, and matching history URLs are shown before you click. See the [README](../README.md). The backend, dwell capture and claim matching described below were removed. This document is kept as the original hackathon design.
 
 ## Product
 
@@ -8,18 +8,17 @@ Status: proposed MVP design, October 11, 2026. Based on the web conversation sup
 
 Build a Chrome extension that recognizes repeated information during sustained feed browsing, then offers a grounded spoiler. The user always controls whether to keep reading. Treat browsing patterns as signals, not a psychological diagnosis.
 
-The user's direction establishes Chrome, content summaries, Keewano history, Darwin extractor discovery, and remembering the agent used. The specific site, thresholds, stack, and visual choices below are proposals.
+The user's direction establishes Chrome and content summaries. The specific site, thresholds, stack, and visual choices below are proposals.
 
 ## MVP scope
 
 - One text-heavy public feed: Reddit proposed, with a controlled local feed using the same extraction interface for a reliable demo.
 - Explicit enablement per supported site; pause and clear-history controls.
 - Visible-content extraction, brief summaries, claim-level repetition matching, and a click-time spoiler.
-- Keewano stores behavioral sequences and extractor outcomes; live history queries affect product decisions.
-- Darwin discovers extractors when the local adapter is insufficient. Reuse a verified successful extractor based on Keewano history.
-- External execution is an integration milestone: discovery alone must never be shown as successful crawling.
+- The backend stores qualified views and uses them as the history for repetition matching.
+- Extraction uses the visible DOM preview; no external crawler.
 
-Defer video/audio understanding, universal site support, accounts, a dedicated analytics dashboard, and automatic execution of arbitrary discovered agents.
+Defer video/audio understanding, universal site support, accounts, a dedicated analytics dashboard, and remote full-text extraction.
 
 ## User journey and surfaces
 
@@ -73,9 +72,6 @@ flowchart TD
   B --> C[TypeScript backend]
   C --> D[Extraction and grounded summaries]
   D --> E[Content store and semantic matching]
-  C --> F[Darwin Search and verified execution adapter]
-  C --> G[Keewano event ingestion]
-  H[Keewano history queries] --> C
   E --> C
   C --> B
   B --> I[Cached decision and spoiler overlay]
@@ -83,9 +79,7 @@ flowchart TD
 
 Proposed stack: TypeScript throughout, Manifest V3 extension bundled with Vite, small Node backend, SQLite for hackathon content records, and backend LLM summarization/embeddings. Keep provider choice configurable. React is optional for the popup; it is unnecessary for feed observation.
 
-The content script observes permitted DOM via IntersectionObserver and MutationObserver, deduplicates stable card IDs, and extracts through a site adapter. The service worker coordinates messages and persists queues/cache in extension storage so suspension does not lose work. The backend owns credentials, extraction validation, similarity, and integrations. No sponsor keys or personal access tokens ship in the extension.
-
-Use Keewano as authoritative behavioral history. Hydrate a local working cache from queried history, then merge pending events by event ID to cover ingestion delay. A degraded session may continue from existing cached evidence, but show that history is unavailable; it is not a successful live-integration demo.
+The content script observes permitted DOM via IntersectionObserver and MutationObserver, deduplicates stable card IDs, and extracts through a site adapter. The service worker coordinates messages and persists queues/cache in extension storage so suspension does not lose work. The backend owns credentials, extraction validation, similarity, and view history. No model credentials ship in the extension.
 
 ## Data boundaries
 
@@ -93,82 +87,38 @@ Use Keewano as authoritative behavioral history. Hydrate a local working cache f
 | --- | --- |
 | Extension local storage | Opt-in sites, sensitivity, install UUID, pending events, recent decision cache |
 | Backend content store | Content ID, canonical public URL, scoped evidence, full summary, claims, embeddings, extraction provenance |
-| Keewano | Ordered typed exposure, click, repetition, intervention, feedback, and extraction events; content/summary/agent references |
-
-Correction to the earlier conversation: Keewano is not the proposed full-text summary database. Its hackathon guide caps event strings at 256 characters and directs raw text elsewhere under an ID. Store summaries externally and retain their references in Keewano. Do not serialize arbitrary objects into string events.
-
-## Keewano integration
-
-Verified documentation:
-
-- Ingestion: `POST https://api.keewano.com/event/ingress/v1/json/in`, using an SDK-type project key in the `k-token` header.
-- Register custom event IDs >= 2000 through `/event/ingress/v1/json/custom`; include the registered map hash and custom data types in batches.
-- Use an anonymous install UUID, UUID dataSessionId, chronological events, and incrementing batch numbers. Retry the same persisted batch unchanged; verify accepted counts as well as HTTP status.
-- Ingestion is asynchronous. The hackathon guide advises allowing about five minutes for query visibility. Verify actual lag before the demo.
-- Read access uses a separate personal access token through SQL or MCP. SQL is a restricted PostgreSQL-compatible surface, not a general relational database.
-
-Proposed append-only event catalog: ContentContext(string ID), SummaryContext(string ID), SiteContext(string), TopicContext(string), ExtractionScope(string), AgentContext(string), CapabilityContext(string), RevisionContext(string), ExtractionAttemptContext(string), ContentViewed(none), DwellSeconds(uint), NavigationOpened(none), ExtractionCompleted(bool), ExtractionLatencyMs(uint), ExtractionQualityPercent(uint), RepeatDetected(none), SpoilerShown(none), SpoilerSkipped(none), ReadAnyway(none), FalsePositiveReported(none), SessionEnded(none).
-
-Register exact numeric IDs during implementation. Write explicit context before each outcome. Serialize context/outcome groups per install so concurrent jobs cannot interleave and inherit another item's agent or content. Clear optional context explicitly when it does not apply. Preserve exact Darwin identifiers; validate identifier lengths against the string limit and use a content-store reference if necessary.
-
-### Queries that change behavior
-
-1. Before extraction, query successful attempts for the site's content type, capability revision, quality, and latency. Prefer a verified compatible extractor; invalidate cached selections on failures or changed requirements. Fall back to local extraction or Darwin discovery when no suitable method exists.
-2. Query the install's recent viewed content IDs and sequence to hydrate the matching window. Use those IDs to retrieve summaries externally. Pending local exposures augment the query until ingestion catches up.
-3. Query intervention outcomes for an explanation of what happened. Report explicit skips separately from ordinary non-clicks.
-
-At least one live query must visibly alter a choice during the demo. Persist query result provenance and timestamps with decisions. Validate exact SQL/Lua queries and access before implementation relies on them.
-
-## Darwin extraction lifecycle
-
-Local DOM adapter → known successful compatible extractor from Keewano → Darwin Search → route/setup verification → supported execution → evidence validation → record outcome.
-
-Search accepts capability descriptions and returns stable agent/capability identifiers plus readiness/setup information. Preserve the exact revision when supplied; do not invent one when absent. Search does not execute the provider. Managed execution requires separate authority and a currently executable route; direct providers may require their own protocol, credentials, and payment.
-
-Keep discovered, selected, execution-started, completed, failed, and unavailable as distinct states. Record attempt ID, exact identity/revision, extraction scope, evidence coverage, latency, error category, and summary ID externally; send typed references/outcomes to Keewano. Define quality from observable extraction checks rather than fabricated completeness scores.
-
-Only configured, verified providers may receive public URLs for execution. Never pass browser cookies, private-page DOM, credentials, or remote executable code into the extension. Cache discovery by site/content type with expiry and rediscover after repeated failure. Do not add an external crawler when the local DOM already supplies adequate evidence.
 
 ## Privacy and failure behavior
 
-Request site-scoped optional permissions and remote-processing consent. Exclude private messages, account/settings pages, incognito, and unapproved sites. Strip tracking parameters and retain only required public content. Implement pause immediately; clearing history clears local/backend records and reports Keewano deletion status honestly until its deletion mechanism is verified.
+Request site-scoped optional permissions and remote-processing consent. Exclude private messages, account/settings pages, incognito, and unapproved sites. Strip tracking parameters and retain only required public content. Implement pause immediately; clearing history clears local/backend records.
 
 | Failure | Behavior |
 | --- | --- |
 | Summary or match still pending | Navigate normally |
-| DOM adapter cannot extract | Try configured fallback asynchronously; otherwise no spoiler |
-| Darwin finds no executable route | Record discovery result and use local/preview fallback |
+| DOM adapter cannot extract | No spoiler |
 | Provider timeout or invalid evidence | No invented summary; record failed attempt |
-| Keewano unavailable | Persist retry queue; mark history degraded |
+| History lookup fails | No spoiler; report detection unavailable |
 | New evidence on same topic | Suppress spoiler or accept user correction |
 
 ## Implementation sequence and acceptance
 
-1. **Integration proof:** register sample events, ingest a batch, query it live; perform real Darwin Search, preserve identities, and verify one executable extraction route or clearly document unavailable execution. Confirm payload limits, read permissions, and query lag.
-2. **Extension foundation:** load unpacked, enable a supported site, observe qualified exposures, persist across worker restarts, pause successfully. Build controlled feed fixtures with repeated claims and genuinely new evidence.
-3. **Content pipeline:** extract preview/full-text scope, produce grounded summaries, persist content and agent provenance, match claims. Prove that same-topic/new-information fixtures do not trigger.
-4. **Keewano decision loop:** hydrate history, merge pending exposures, query extractor outcomes, and visibly change an extractor choice based on queried evidence.
-5. **Intervention UI:** implement badge, cached click decision, spoiler, skip/read-anyway/feedback, cooldown and accessible focus handling.
-6. **Demo validation:** exercise real feed where practical, fallback feed, network failures, stale DOM updates, and service-worker suspension. Verify live Keewano query, actual provider outcomes, and no credentials in extension assets.
+1. **Extension foundation:** load unpacked, enable a supported site, observe qualified exposures, persist across worker restarts, pause successfully. Build controlled feed fixtures with repeated claims and genuinely new evidence.
+2. **Content pipeline:** extract preview/full-text scope, produce grounded summaries, persist content and agent provenance, match claims. Prove that same-topic/new-information fixtures do not trigger.
+3. **Intervention UI:** implement badge, cached click decision, spoiler, skip/read-anyway/feedback, cooldown and accessible focus handling.
+4. **Demo validation:** exercise real feed where practical, fallback feed, network failures, stale DOM updates, and service-worker suspension. Verify no credentials in extension assets.
 
-Suggested repository layout: `extension/`, `server/`, `demo/`, `shared/`, `docs/`. Tests should focus on dwell qualification, deduplication, context grouping, batch retries, new-evidence suppression, evidence grounding, and preserving navigation.
+Suggested repository layout: `extension/`, `server/`, `demo/`, `shared/`, `docs/`. Tests should focus on dwell qualification, deduplication, new-evidence suppression, evidence grounding, and preserving navigation.
 
 ## Demo and measurement
 
-Demonstrate three already-viewed items with shared claims, a candidate with the same claims, and another item containing new evidence. Show the repetitive candidate's spoiler and successful read-anyway behavior; leave the new-evidence item alone. Query actual Keewano history live and show it changing an extractor selection or repetition decision. Use historical fixtures to cover query lag, label seeded data, and include genuinely live events.
+Demonstrate three already-viewed items with shared claims, a candidate with the same claims, and another item containing new evidence. Show the repetitive candidate's spoiler and successful read-anyway behavior; leave the new-evidence item alone.
 
-Measure qualified exposures, interventions, explicit skips, read-anyway rate, false-positive feedback, extraction success, and latency. “Skipped after spoiler” is observed behavior; it does not prove a click was avoided. Omit time-saved claims until a baseline or experiment supports them.
+Measure qualified exposures, interventions, explicit skips, read-anyway rate, and false-positive feedback. “Skipped after spoiler” is observed behavior; it does not prove a click was avoided. Omit time-saved claims until a baseline or experiment supports them.
 
 ## Open choices and first build step
 
-Confirm the first live site and available model/provider credentials before integration work. Proposed defaults are Reddit plus a local demo feed and a TypeScript/Node stack. Establish Keewano project/read access and verify a real Darwin result before promising remote extraction. The immediate next build step is the integration proof, followed by the extension skeleton.
+Proposed defaults are Reddit plus a local demo feed and a TypeScript/Node stack.
 
 ## Sources checked
 
-- [Keewano overview](https://docs.keewano.com/getting-started/readme)
-- [Keewano ingestion and credentials](https://docs.keewano.com/getting-started/connecting-to-keewano)
-- [Keewano SpeedHacks requirements and event limits](https://docs.keewano.com/getting-started/speedhacks-quickstart)
-- [Darwin Search and execution quickstart](https://darwin.so/docs/get-started/quickstart)
 - [Chrome content scripts](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts)
-
-Documentation was read October 11, 2026. API calls, account access, and end-to-end behavior remain untested.

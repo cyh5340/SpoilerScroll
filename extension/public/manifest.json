@@ -2,18 +2,19 @@
   "manifest_version": 3,
   "name": "SpoilerScroll",
   "version": "0.1.0",
-  "description": "Recognize repeated information and choose whether to keep reading.",
+  "description": "Flags posts and headlines that look like pages already in your browser history.",
   "minimum_chrome_version": "120",
   "permissions": [
     "storage",
     "scripting",
-    "alarms",
     "activeTab"
   ],
+  "optional_permissions": [
+    "history"
+  ],
   "optional_host_permissions": [
-    "https://www.reddit.com/*",
-    "https://old.reddit.com/*",
-    "http://127.0.0.1/*"
+    "https://*/*",
+    "http://*/*"
   ],
   "background": {
     "service_worker": "background.js"

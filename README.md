@@ -1,18 +1,29 @@
 # SpoilerScroll
 
-A Chrome extension that records qualified public Reddit previews and offers evidence-grounded spoilers for repeated information.
+A Chrome extension that flags posts and headlines, on any site, that look like pages you have already opened. It compares each post's title and visible text with the titles in your Chrome history. If you click a flagged post, a full-page notice lists the matching history pages before you decide to read it or skip it.
 
-## Use it on Reddit
+Everything runs in the extension. Nothing is sent anywhere.
 
-The extension and backend routes are connected. Behavior detection requires **live Keewano history reads**. Local extractive summaries supply content evidence; only views confirmed by Keewano can support a spoiler. The current `.env` has an ingestion key but lacks SQL-read credentials, so views are queued and detection is unavailable until read access is configured.
+## How matching works
 
-```sh
-npm ci
-npm run build
-npm start
-```
+Matching is plain word comparison: identical strings only, no stemming or fuzzy matching.
 
-Keep that terminal open. The backend listens on `http://127.0.0.1:8787`.
+- **What is checked:** every `http(s)` link on the page except those in menus, page headers and footers, plus Reddit's post cards. When several links go to the same address (e.g. a search result's site-name link and its headline), the one with the longest text is its title.
+- **Text that is compared:** the link's text as its title, plus up to 2,000 characters of visible text around it (the article, list item or parent). History only stores page titles, so that is what's on the other side. Every history page in the time range is used, titled or not.
+- **The rule:** text is lowercased and split on anything that isn't a letter or digit. Common words ("the", "to", "what", "reddit", …) and single letters are ignored; everything else counts. Each word the history title shares with the post's **title** scores 1. Each word it shares only with the post's **visible text** scores ½. A history page matches when its score reaches **N**. Words must be identical: no stemming and no fuzzy matching.
+- Only history from the chosen **time range** (1, 7 or 30 days) is searched.
+- If the post itself is in your history, it always matches, including across `www`/`old.reddit.com` and different URL slugs. It is listed first as "this post".
+- The page you are on is never matched against itself: not its URL, and not a history page with exactly its title (search engines add parameters to the URL after you click a result).
+
+N defaults to 3 and the range to 7 days. You can change both in the popup. At N = 3, a match needs 3 shared title words, 2 title words plus 2 text words, or 6 text words. Raise N (up to 10) if too much gets flagged, or lower it to 2 to catch looser matches.
+
+## What you see
+
+- **Badge** on each matching post: "Similar to 3 pages in your history".
+- **Bottom-right notice** with the count for the page while SpoilerScroll is on: "2 of 35 links here match pages from your history (last 7 days)".
+- **Full-page notice** when you click a flagged post. It lists each matching history page with its URL, when you visited it, and the shared words, marked as title or text. You can choose **Skip this**, **Read anyway** or **Pause SpoilerScroll**. Every way of opening a flagged link is caught: plain click, links that open a new tab, Ctrl/⌘/Shift-click and middle click. **Read anyway** opens it the way you meant (same tab or new tab). Links with no match open normally.
+
+## Install
 
 ```sh
 cd extension
@@ -20,46 +31,35 @@ npm ci
 npm run build
 ```
 
-1. Open `chrome://extensions` and enable Developer mode.
-2. If an earlier SpoilerScroll build was installed before stable identity was added, remove it once. Load unpacked and choose `SpoilerScroll/extension/dist`.
-3. Open the toolbar popup → **Set up Reddit monitoring**. Accept public-preview processing and click **Allow Reddit and connect**. Pairing is automatic; no sponsor keys or pairing token need to be pasted.
-4. Open `https://old.reddit.com/r/technology/` or `https://www.reddit.com/r/technology/`. Scroll through public posts, holding each preview half visible for at least 3 seconds in the active tab.
-5. The popup's viewed count rises. Ready repeated-information matches receive a badge; a plain headline click shows the spoiler. Read anyway, Skip, feedback and Pause are available.
+1. Open `chrome://extensions`, enable Developer mode, then **Load unpacked** and choose `extension/dist`.
+2. Click the toolbar icon. While the pill says **Off**, the main button is **Turn on: allow sites and history**. Click it and accept Chrome's prompt; the pill turns **On**.
+3. Refresh the pages you have open. A dark box in the bottom-right corner shows how many links on the page match your history. No box means SpoilerScroll is not running on that page.
 
-A spoiler is not guaranteed on arbitrary posts. The current local detector requires exact repeated evidence across three distinct prior viewed posts. Paraphrased articles on the same subject will usually be missed. This is an intentionally conservative real-data baseline, not a demonstration of semantic similarity. Private pages and incognito are excluded. Reddit selectors may change; old Reddit is the simpler first acceptance target.
+A scripted demo page, which never reads your real history, is at `chrome-extension://<extension id>/fixture.html`.
 
-**Try the local demo** is separate: scripted fixture content never reaches the backend or sponsors. It is useful for seeing the overlay immediately.
+Permissions are optional and requested only when you turn it on: `history` and access to all `http`/`https` sites. Incognito is excluded.
 
-## Connected architecture
+On real sites, the badge, notice and overlay use closed shadow roots, so the site's own page scripts cannot read the history titles or URLs shown to you.
 
-- `POST /pair` issues a private per-install token to the exact stable extension origin, after consent.
-- `POST /observations` persists qualified exposures, prepares decisions, and queues ContentViewed events to Keewano.
-- `POST /candidates` prepares evidence with zero dwell; it does not emit ContentViewed or enter consumed history.
-- `GET /decisions?installId=...&observationId=...` returns cached decisions without model work.
-- `POST /events` records spoiler outcomes.
-- `GET /health` shows detector/history availability and the expected extension ID.
-
-Every data route checks the paired install identity. The extension holds a dedicated local pairing token; Keewano and model credentials remain on the backend. Its manifest public key gives it the stable ID `okefejdjejhamecphdobcfhcmdekhmaj`.
-
-Backend state is stored privately in `.data/app/`; the Keewano durable transport queue uses `KEEWANO_DATA_DIR`. Do not share that queue with another project key. A local queue acceptance is not proof of remote Keewano acceptance. Retries may duplicate analytics around a process crash or a lost outcome response; observation persistence is idempotent by install/observation ID.
-
-## Keewano behavior history and optional model analysis
-
-To enable configured model RPC analysis, set `MODEL_RPC_URL`, `MODEL_RPC_TOKEN`, `MODEL_NAME`, and `MODEL_REVISION`, then restart. This is the explicit operator-owned RPC contract in [content-pipeline.md](docs/content-pipeline.md), not an assumed vendor API. The current matcher remains conservative exact-claim matching even with model-generated retrieval vectors.
-
-To enable Keewano history reads, set `KEEWANO_READ_EMAIL`, `KEEWANO_READ_PAT`, and `KEEWANO_PROJECT_ID`, then restart. SQL uses TLS and separate read authority; the ingestion key cannot grant it. Without those credentials or when the query fails, detection is unavailable. Local observations and pending analytics never substitute for Keewano-confirmed consumption. Keewano ingestion delay can postpone spoilers; local text and summaries are hydrated only through the exact summary IDs returned by Keewano. Live SQL/schema semantics still need verification when credentials are available.
-
-Darwin discovery is wired as a fallback when local preview extraction is insufficient. Exact identities and discovery outcomes are recorded; no provider is executed without a verified adapter. Previously discovered providers offered no executable route. Missing model/read/provider access never becomes a fabricated success.
-
-## Developer checks
+## Checks
 
 ```sh
-npm run verify:wiring
-npm run test:all
+cd extension
+npm run typecheck
+npm test               # matcher and URL/navigation policy unit tests
+npm run test:browser   # headless Chromium; npx playwright install chromium if needed, or set CHROMIUM_PATH
 ```
 
-`verify:wiring` is a fast localhost HTTP check using isolated temporary data and mocked Keewano transport. It covers pairing, authorization, observations, candidate preparation, decisions, and view-event counts, without a browser or sponsor calls.
+The browser test covers two things. It runs the demo with scripted history. It also checks real `chrome.history` matching on an old-Reddit feed and a generic news page. Playwright serves stand-in Reddit, YouTube and news pages so actual history entries exist without network access. On the news page, one post matches only through its preview text, a menu link that would match is ignored, and new-tab links and Ctrl/⌘-clicks are caught. That test copy of the extension gets the optional permissions up front, since headless Chrome cannot click permission prompts. It was also run once by hand against live Bing for “Apple Welcome Home Event”: after one result was read, clicking related results showed the notice.
 
-`test:all` runs the component suites plus headless extension fixture tests. Install Chromium with `cd extension && npx playwright install chromium` if needed, or set `CHROMIUM_PATH`. These checks do not replace trying actual Reddit DOM layouts.
+## Layout
 
-[Extension details](extension/README.md) · [Design plan](docs/design-plan.md) · [Integrations](docs/integrations.md)
+- `extension/src/match.ts`: word extraction, URL canonicalisation, `findMatches`.
+- `extension/src/background.ts`: settings, permissions, `chrome.history` lookup (cached 5 s), demo history.
+- `extension/src/content.ts`: finds posts, asks for matches, renders badges/notice, intercepts clicks.
+- `extension/src/overlay.ts`: badge, bottom-right notice, full-page notice.
+- `extension/src/adapter.ts`: post extraction (Reddit cards, generic headline links, demo cards).
+- `extension/src/policy.ts`: supported pages, Reddit URL cleanup, which clicks may be intercepted.
+- `extension/public/`: manifest, popup, demo page.
+
+[Original design plan](docs/design-plan.md) (hackathon-era, superseded)
